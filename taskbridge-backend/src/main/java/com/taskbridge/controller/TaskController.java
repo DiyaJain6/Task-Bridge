@@ -1,6 +1,12 @@
 package com.taskbridge.controller;
 
 import java.security.Principal;
+import java.time.DayOfWeek;
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -239,5 +245,136 @@ public class TaskController {
         auditLogRepo.save(log);
 
         return saved;
+    }
+
+    @PutMapping("/{id}/quality-score")
+    public org.springframework.http.ResponseEntity<?> setQualityScore(
+            @PathVariable Long id,
+            @RequestBody Map<String, Integer> body,
+            Principal principal) {
+        try {
+            User manager = userRepo.findByEmail(principal.getName()).orElseThrow();
+            if (manager.getRole() != Role.MANAGER && manager.getRole() != Role.ADMIN)
+                return org.springframework.http.ResponseEntity.status(403).body("Unauthorized");
+
+            Task task = taskRepo.findById(id).orElseThrow();
+            int score = body.getOrDefault("score", 0);
+            if (score < 1 || score > 5)
+                return org.springframework.http.ResponseEntity.badRequest().body("Score must be between 1 and 5");
+
+            task.setQualityScore(score);
+            Task saved = taskRepo.save(task);
+
+            if (saved.getAssignedBy() != null) {
+                createNotification(saved.getAssignedBy(), "Quality Review",
+                        "Your task \"" + saved.getTitle() + "\" received a quality score of " + score + "/5.");
+            }
+            return org.springframework.http.ResponseEntity.ok(saved);
+        } catch (Exception e) {
+            return org.springframework.http.ResponseEntity.status(500).body(e.getMessage());
+        }
+    }
+
+    @PutMapping("/{id}/backup-assignee")
+    public org.springframework.http.ResponseEntity<?> setBackupAssignee(
+            @PathVariable Long id,
+            @RequestBody Map<String, Long> body,
+            Principal principal) {
+        try {
+            User manager = userRepo.findByEmail(principal.getName()).orElseThrow();
+            if (manager.getRole() != Role.MANAGER && manager.getRole() != Role.ADMIN)
+                return org.springframework.http.ResponseEntity.status(403).body("Unauthorized");
+
+            Task task = taskRepo.findById(id).orElseThrow();
+            Long backupId = body.get("backupUserId");
+            if (backupId == null)
+                return org.springframework.http.ResponseEntity.badRequest().body("backupUserId is required");
+
+            User backup = userRepo.findById(backupId)
+                    .orElseThrow(() -> new RuntimeException("Backup user not found"));
+            task.setBackupAssignee(backup);
+            Task saved = taskRepo.save(task);
+
+            createNotification(backup, "Backup Assignment",
+                    "You have been set as the backup assignee for task \"" + saved.getTitle() + "\".");
+            return org.springframework.http.ResponseEntity.ok(saved);
+        } catch (Exception e) {
+            return org.springframework.http.ResponseEntity.status(500).body(e.getMessage());
+        }
+    }
+
+    @GetMapping("/finance-stats")
+    public org.springframework.http.ResponseEntity<?> getFinanceStats(Principal principal) {
+        try {
+            User manager = userRepo.findByEmail(principal.getName()).orElseThrow();
+
+            // Get all tasks assigned TO this manager
+            List<Task> myTasks = taskRepo.findByAssignedTo(manager);
+
+            long completedCount = myTasks.stream().filter(t -> "COMPLETED".equals(t.getStatus())).count();
+            long rejectedCount = myTasks.stream().filter(t -> "REJECTED".equals(t.getStatus())).count();
+
+            // Earnings: $50 per completed task
+            double totalEarnings = completedCount * 50.0;
+
+            // Efficiency: completed / (completed + rejected) * 100, default 100 if no data
+            double efficiency = 100.0;
+            long denominator = completedCount + rejectedCount;
+            if (denominator > 0) {
+                efficiency = Math.round((completedCount * 100.0 / denominator) * 10.0) / 10.0;
+            }
+
+            // Avg completion time in hours (startedAt -> completedAt)
+            List<Task> completedTasks = myTasks.stream()
+                    .filter(t -> "COMPLETED".equals(t.getStatus())
+                            && t.getStartedAt() != null
+                            && t.getCompletedAt() != null)
+                    .toList();
+
+            double avgHours = 0.0;
+            if (!completedTasks.isEmpty()) {
+                double totalHours = completedTasks.stream()
+                        .mapToDouble(t -> Duration.between(t.getStartedAt(), t.getCompletedAt()).toMinutes() / 60.0)
+                        .sum();
+                avgHours = Math.round((totalHours / completedTasks.size()) * 10.0) / 10.0;
+            }
+
+            // Heatmap: count of tasks completed per day-of-week (last 90 days)
+            // Keys: MON, TUE, WED, THU, FRI, SAT, SUN
+            Map<String, Integer> heatmap = new LinkedHashMap<>();
+            String[] days = { "MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN" };
+            for (String d : days)
+                heatmap.put(d, 0);
+
+            LocalDateTime cutoff = LocalDateTime.now().minusDays(90);
+            myTasks.stream()
+                    .filter(t -> "COMPLETED".equals(t.getStatus())
+                            && t.getCompletedAt() != null
+                            && t.getCompletedAt().isAfter(cutoff))
+                    .forEach(t -> {
+                        DayOfWeek dow = t.getCompletedAt().getDayOfWeek();
+                        String key = switch (dow) {
+                            case MONDAY -> "MON";
+                            case TUESDAY -> "TUE";
+                            case WEDNESDAY -> "WED";
+                            case THURSDAY -> "THU";
+                            case FRIDAY -> "FRI";
+                            case SATURDAY -> "SAT";
+                            case SUNDAY -> "SUN";
+                        };
+                        heatmap.merge(key, 1, Integer::sum);
+                    });
+
+            Map<String, Object> result = new HashMap<>();
+            result.put("totalEarnings", totalEarnings);
+            result.put("efficiency", efficiency);
+            result.put("avgHours", avgHours);
+            result.put("completedCount", completedCount);
+            result.put("heatmap", heatmap);
+
+            return org.springframework.http.ResponseEntity.ok(result);
+        } catch (Exception e) {
+            return org.springframework.http.ResponseEntity.status(500).body(e.getMessage());
+        }
     }
 }

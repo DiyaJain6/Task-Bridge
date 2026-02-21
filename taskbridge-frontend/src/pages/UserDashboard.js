@@ -9,19 +9,28 @@ function UserDashboard() {
     const [managers, setManagers] = useState([]);
     const [notifications, setNotifications] = useState([]);
     const [activeTab, setActiveTab] = useState("requests");
+    const [draftSaved, setDraftSaved] = useState(false);
+    const [showDraftPanel, setShowDraftPanel] = useState(false);
+    const [historyFilter, setHistoryFilter] = useState("ALL"); // ALL | COMPLETED | REJECTED
+    const [savedDraftData, setSavedDraftData] = useState(() => {
+        try { const s = localStorage.getItem("taskbridge_task_draft"); return s ? JSON.parse(s) : null; } catch { return null; }
+    });
     const [chatMessages, setChatMessages] = useState([]);
     const [newMessage, setNewMessage] = useState("");
     const [selectedFile, setSelectedFile] = useState(null);
     const [unreadCount, setUnreadCount] = useState(0);
     const fileInputRef = useRef(null);
 
-    const [form, setForm] = useState({
-        title: "",
-        description: "",
-        category: "IT_SUPPORT",
-        priority: "MEDIUM",
-        deadline: ""
-    });
+    const DRAFT_KEY = "taskbridge_task_draft";
+
+    const loadDraft = () => {
+        try {
+            const saved = localStorage.getItem(DRAFT_KEY);
+            return saved ? JSON.parse(saved) : { title: "", description: "", category: "IT_SUPPORT", priority: "MEDIUM", deadline: "" };
+        } catch { return { title: "", description: "", category: "IT_SUPPORT", priority: "MEDIUM", deadline: "" }; }
+    };
+
+    const [form, setForm] = useState({ title: "", description: "", category: "IT_SUPPORT", priority: "MEDIUM", deadline: "" });
     const [loading, setLoading] = useState(false);
 
     useEffect(() => {
@@ -32,6 +41,14 @@ function UserDashboard() {
         fetchUnreadCount();
         fetchMessages();
         return () => { document.body.className = ''; };
+    }, []);
+
+    // Live polling: re-fetch tasks every 15 seconds so history stays up to date
+    useEffect(() => {
+        const interval = setInterval(() => {
+            fetchTasks();
+        }, 15000);
+        return () => clearInterval(interval);
     }, []);
 
     const fetchNotifications = async () => {
@@ -98,6 +115,31 @@ function UserDashboard() {
         }
     };
 
+    // ── Draft helpers ──────────────────────────────────────────────────
+    const saveDraft = () => {
+        localStorage.setItem(DRAFT_KEY, JSON.stringify(form));
+        setSavedDraftData({ ...form });
+        setDraftSaved(true);
+        setTimeout(() => setDraftSaved(false), 2000);
+    };
+
+    const clearDraft = () => {
+        localStorage.removeItem(DRAFT_KEY);
+        setForm({ title: "", description: "", category: "IT_SUPPORT", priority: "MEDIUM", deadline: "" });
+        setSelectedFile(null);
+        setDraftSaved(false);
+        setSavedDraftData(null);
+        setShowDraftPanel(false);
+    };
+
+    const restoreDraft = () => {
+        if (savedDraftData) {
+            setForm({ ...savedDraftData });
+            setShowDraftPanel(false);
+        }
+    };
+    // ──────────────────────────────────────────────────────────────────
+
     const createTask = async () => {
         if (!form.title || !form.description || !form.deadline) {
             alert("Please fill all fields including Deadline");
@@ -113,6 +155,7 @@ function UserDashboard() {
 
             await api.post("/tasks", form);
             const taskTitle = form.title;
+            localStorage.removeItem(DRAFT_KEY); // clear draft on success
             setForm({ title: "", description: "", category: "IT_SUPPORT", priority: "MEDIUM", deadline: "" });
             setSelectedFile(null);
             fetchTasks();
@@ -198,7 +241,7 @@ function UserDashboard() {
                     <div className="btn-premium btn-outline-glass" style={{ position: 'relative', cursor: 'pointer' }} onClick={() => { setActiveTab("inbox"); fetchUnreadCount(); }}>
                         Notifications <span style={{ position: 'absolute', top: -5, right: -5, background: 'var(--danger)', borderRadius: '50%', width: 18, height: 18, fontSize: 10, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{unreadCount}</span>
                     </div>
-                    <button className="btn-premium btn-outline-glass" onClick={() => { localStorage.clear(); window.location.href = '/login'; }}>
+                    <button className="btn-premium btn-outline-glass" onClick={() => { const draft = localStorage.getItem(DRAFT_KEY); localStorage.clear(); if (draft) localStorage.setItem(DRAFT_KEY, draft); window.location.href = '/login'; }}>
                         Logout
                     </button>
                 </div>
@@ -215,6 +258,7 @@ function UserDashboard() {
             {/* Navigation Tabs */}
             <div style={{ display: 'flex', gap: 20, marginBottom: 40, borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: 16 }}>
                 <span onClick={() => setActiveTab("requests")} style={{ cursor: 'pointer', fontWeight: 800, color: activeTab === "requests" ? "var(--user-primary)" : "rgba(255,255,255,0.4)", borderBottom: activeTab === "requests" ? "2px solid var(--user-primary)" : "none", paddingBottom: 16 }}>My Requests</span>
+                <span onClick={() => setActiveTab("history")} style={{ cursor: 'pointer', fontWeight: 800, color: activeTab === "history" ? "var(--user-primary)" : "rgba(255,255,255,0.4)", borderBottom: activeTab === "history" ? "2px solid var(--user-primary)" : "none", paddingBottom: 16 }}>Task History</span>
                 <span onClick={() => setActiveTab("chat")} style={{ cursor: 'pointer', fontWeight: 800, color: activeTab === "chat" ? "var(--user-primary)" : "rgba(255,255,255,0.4)", borderBottom: activeTab === "chat" ? "2px solid var(--user-primary)" : "none", paddingBottom: 16 }}>Support Chat</span>
                 <span onClick={() => { setActiveTab("inbox"); fetchUnreadCount(); }} style={{ cursor: 'pointer', fontWeight: 800, color: activeTab === "inbox" ? "var(--user-primary)" : "rgba(255,255,255,0.4)", borderBottom: activeTab === "inbox" ? "2px solid var(--user-primary)" : "none", paddingBottom: 16 }}>Notifications</span>
             </div>
@@ -276,7 +320,40 @@ function UserDashboard() {
                                         </div>
                                     </div>
 
-                                    <button className="btn-premium btn-primary-user" onClick={createTask} disabled={loading} style={{ width: '100%', justifyContent: 'center', marginTop: 12 }}>
+                                    <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                                        <button className="btn-premium btn-outline-glass" onClick={saveDraft} style={{ flex: 1, justifyContent: 'center', borderColor: draftSaved ? 'var(--success, #22c55e)' : undefined, color: draftSaved ? 'var(--success, #22c55e)' : undefined }}>
+                                            {draftSaved ? '✅ Draft Saved!' : '💾 Save Draft'}
+                                        </button>
+                                        {savedDraftData && (
+                                            <button className="btn-premium btn-outline-glass" onClick={() => setShowDraftPanel(p => !p)} style={{ padding: '0 14px', justifyContent: 'center', borderColor: showDraftPanel ? 'var(--user-primary)' : undefined, color: showDraftPanel ? 'var(--user-primary)' : undefined }} title="View saved draft">
+                                                📋
+                                            </button>
+                                        )}
+                                        <button className="btn-premium btn-outline-glass" onClick={clearDraft} style={{ padding: '0 16px', justifyContent: 'center', opacity: 0.6 }} title="Clear form">
+                                            🗑
+                                        </button>
+                                    </div>
+
+                                    {showDraftPanel && savedDraftData && (
+                                        <div style={{ marginTop: 12, padding: 16, borderRadius: 12, background: 'rgba(56,189,248,0.07)', border: '1px solid rgba(56,189,248,0.25)' }}>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                                                <span style={{ fontWeight: 800, fontSize: '0.9rem', color: 'var(--user-primary)' }}>📋 Saved Draft</span>
+                                                <button onClick={() => setShowDraftPanel(false)} style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.4)', cursor: 'pointer', fontSize: '1rem', lineHeight: 1 }}>✕</button>
+                                            </div>
+                                            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: '0.85rem' }}>
+                                                <div><span style={{ opacity: 0.5, marginRight: 8 }}>Title:</span><span style={{ fontWeight: 700 }}>{savedDraftData.title || '—'}</span></div>
+                                                <div><span style={{ opacity: 0.5, marginRight: 8 }}>Description:</span><span style={{ opacity: 0.8 }}>{savedDraftData.description || '—'}</span></div>
+                                                <div style={{ display: 'flex', gap: 24 }}>
+                                                    <div><span style={{ opacity: 0.5, marginRight: 8 }}>Priority:</span><span>{savedDraftData.priority || '—'}</span></div>
+                                                    <div><span style={{ opacity: 0.5, marginRight: 8 }}>Deadline:</span><span>{savedDraftData.deadline ? new Date(savedDraftData.deadline).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : '—'}</span></div>
+                                                </div>
+                                            </div>
+                                            <button className="btn-premium btn-primary-user" onClick={restoreDraft} style={{ width: '100%', justifyContent: 'center', marginTop: 14, fontSize: '0.85rem' }}>
+                                                ↩ Restore to Form
+                                            </button>
+                                        </div>
+                                    )}
+                                    <button className="btn-premium btn-primary-user" onClick={createTask} disabled={loading} style={{ width: '100%', justifyContent: 'center', marginTop: 8 }}>
                                         {loading ? "Submitting Identity..." : "Finalize Application"}
                                     </button>
                                 </div>
@@ -293,7 +370,7 @@ function UserDashboard() {
                                                         <span className={`badge badge-${t.priority?.toLowerCase() || 'medium'}`}>{t.priority}</span>
                                                         <strong style={{ fontSize: '1.2rem' }}>{t.title}</strong>
                                                     </div>
-                                                    <span style={{ fontSize: '0.8rem', opacity: 0.6 }}>{new Date().toLocaleDateString()}</span>
+                                                    <span style={{ fontSize: '0.8rem', opacity: 0.6 }}>{t.createdAt ? new Date(t.createdAt).toLocaleDateString() : new Date().toLocaleDateString()}</span>
                                                 </div>
                                                 <p style={{ margin: 0, opacity: 0.7 }}>{t.description}</p>
 
@@ -347,6 +424,126 @@ function UserDashboard() {
                             </div>
                         </div>
                     )}
+
+                    {activeTab === "history" && (() => {
+                        const historyTasks = tasks
+                            .filter(t => t.status === 'COMPLETED' || t.status === 'REJECTED')
+                            .filter(t => historyFilter === 'ALL' || t.status === historyFilter)
+                            .sort((a, b) => {
+                                const dateA = new Date(a.completedAt || a.createdAt || 0);
+                                const dateB = new Date(b.completedAt || b.createdAt || 0);
+                                return dateB - dateA; // newest first
+                            });
+
+                        return (
+                            <div className="glass-card">
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
+                                    <h2 style={{ fontSize: '1.5rem', fontWeight: 800, margin: 0 }}>Task History</h2>
+                                    <div style={{ display: 'flex', gap: 8 }}>
+                                        {['ALL', 'COMPLETED', 'REJECTED'].map(f => (
+                                            <button
+                                                key={f}
+                                                onClick={() => setHistoryFilter(f)}
+                                                className={`btn-premium ${historyFilter === f ? 'btn-primary-user' : 'btn-outline-glass'}`}
+                                                style={{ padding: '6px 14px', fontSize: '0.75rem' }}
+                                            >
+                                                {f === 'ALL' ? 'All' : f === 'COMPLETED' ? '✓ Completed' : '✕ Rejected'}
+                                            </button>
+                                        ))}
+                                        <button
+                                            className="btn-premium btn-outline-glass"
+                                            onClick={fetchTasks}
+                                            style={{ padding: '6px 12px', fontSize: '0.75rem' }}
+                                            title="Refresh"
+                                        >↻ Refresh</button>
+                                    </div>
+                                </div>
+
+                                {historyTasks.length === 0 ? (
+                                    <div className="empty-state">No {historyFilter !== 'ALL' ? historyFilter.toLowerCase() : 'completed or rejected'} tasks yet.</div>
+                                ) : (
+                                    <ul className="task-list">
+                                        {historyTasks.map(t => (
+                                            <li key={t.id} className="task-item" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 14 }}>
+
+                                                {/* Header row: priority badge + title + status chip */}
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                                                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                                        <span className={`badge badge-${t.priority?.toLowerCase() || 'medium'}`}>{t.priority}</span>
+                                                        <strong style={{ fontSize: '1.1rem' }}>{t.title}</strong>
+                                                    </div>
+                                                    <span style={{
+                                                        fontSize: '0.75rem', fontWeight: 700, padding: '4px 12px', borderRadius: 20,
+                                                        background: t.status === 'COMPLETED' ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)',
+                                                        color: t.status === 'COMPLETED' ? '#22c55e' : '#ef4444',
+                                                        border: `1px solid ${t.status === 'COMPLETED' ? '#22c55e' : '#ef4444'}`
+                                                    }}>
+                                                        {t.status === 'COMPLETED' ? '✓ Completed' : '✕ Rejected'}
+                                                    </span>
+                                                </div>
+
+                                                {/* Description */}
+                                                <p style={{ margin: 0, opacity: 0.7, fontSize: '0.9rem' }}>{t.description}</p>
+
+                                                {/* Meta row */}
+                                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 20, width: '100%', fontSize: '0.78rem', opacity: 0.55 }}>
+                                                    <span>Category: <strong style={{ opacity: 1 }}>{t.category || '—'}</strong></span>
+                                                    <span>Priority: <strong style={{ opacity: 1 }}>{t.priority || '—'}</strong></span>
+                                                    <span>Deadline: <strong style={{ opacity: 1 }}>{t.deadline ? new Date(t.deadline).toLocaleDateString() : '—'}</strong></span>
+                                                    {t.assignedTo && (
+                                                        <span>Handler: <strong style={{ opacity: 1, color: 'var(--user-primary)' }}>{t.assignedTo.name}</strong></span>
+                                                    )}
+                                                </div>
+
+                                                {/* Timestamps */}
+                                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 20, width: '100%', fontSize: '0.75rem', opacity: 0.4 }}>
+                                                    {t.createdAt && (
+                                                        <span>Submitted: {new Date(t.createdAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</span>
+                                                    )}
+                                                    {t.startedAt && (
+                                                        <span>Started: {new Date(t.startedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</span>
+                                                    )}
+                                                    {t.completedAt && (
+                                                        <span>{t.status === 'COMPLETED' ? 'Completed' : 'Closed'}: <strong style={{ color: t.status === 'COMPLETED' ? '#22c55e' : '#ef4444', opacity: 1 }}>{new Date(t.completedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</strong></span>
+                                                    )}
+                                                </div>
+
+                                                {/* Feedback / Rejection Reason */}
+                                                {t.status === 'COMPLETED' && t.feedback && (
+                                                    <div style={{ width: '100%', padding: '10px 14px', background: 'rgba(34,197,94,0.07)', borderRadius: 10, border: '1px solid rgba(34,197,94,0.2)', fontSize: '0.85rem' }}>
+                                                        <span style={{ opacity: 0.5, marginRight: 6 }}>Handler feedback:</span>
+                                                        <span style={{ opacity: 0.9 }}>{t.feedback}</span>
+                                                    </div>
+                                                )}
+                                                {t.status === 'REJECTED' && t.rejectionReason && (
+                                                    <div style={{ width: '100%', padding: '10px 14px', background: 'rgba(239,68,68,0.07)', borderRadius: 10, border: '1px solid rgba(239,68,68,0.2)', fontSize: '0.85rem' }}>
+                                                        <span style={{ opacity: 0.5, marginRight: 6 }}>Rejection reason:</span>
+                                                        <span style={{ opacity: 0.9 }}>{t.rejectionReason}</span>
+                                                    </div>
+                                                )}
+
+                                                {/* Quality Score */}
+                                                {t.qualityScore && (
+                                                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.8rem' }}>
+                                                        <span style={{ opacity: 0.5 }}>Quality Score:</span>
+                                                        <span style={{ color: '#facc15', fontSize: '1rem', letterSpacing: 2 }}>
+                                                            {'★'.repeat(t.qualityScore)}{'☆'.repeat(5 - t.qualityScore)}
+                                                        </span>
+                                                        <span style={{ opacity: 0.5 }}>{t.qualityScore}/5</span>
+                                                    </div>
+                                                )}
+
+                                                {/* Re-Request button for completed tasks */}
+                                                {t.status === 'COMPLETED' && (
+                                                    <button className="btn-premium btn-primary-user" onClick={() => reRequestTask(t.id, t.title)} style={{ padding: '6px 14px', fontSize: '0.75rem' }}>Re-Request</button>
+                                                )}
+                                            </li>
+                                        ))}
+                                    </ul>
+                                )}
+                            </div>
+                        );
+                    })()}
 
                     {activeTab === "chat" && (
                         <div className="glass-card">

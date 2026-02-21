@@ -30,31 +30,33 @@ const MissionTimer = ({ startTime }) => {
     );
 };
 
-// Revenue Heatmap Component
-const RevenueHeatmap = () => {
-    // Generate mock data for the last 15 weeks (stabilized)
-    const weeks = useState(() => Array.from({ length: 15 }, () => Array.from({ length: 7 }, () => Math.floor(Math.random() * 5))))[0];
+// Revenue Heatmap — driven by real day-of-week counts from the API
+const RevenueHeatmap = ({ heatmap }) => {
+    const days = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+    const counts = days.map(d => (heatmap ? (heatmap[d] || 0) : 0));
+    const maxCount = Math.max(...counts, 1); // avoid div-by-zero
 
     return (
         <div className="heatmap-container">
-            <h3 style={{ marginBottom: 20, opacity: 0.6, fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: 2 }}>Extraction Frequency (Heatmap)</h3>
-            <div className="heatmap-grid">
-                {weeks.map((week, i) => (
-                    <div key={i} className="heatmap-day-col">
-                        {week.map((level, j) => (
-                            <div key={j} className={`heatmap-square level-${level}`} title={`Activity Level: ${level}`}></div>
-                        ))}
+            <h3 style={{ marginBottom: 20, opacity: 0.6, fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: 2 }}>Tasks Completed — By Day of Week (Last 90 Days)</h3>
+            <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', height: 120 }}>
+                {days.map((day, i) => (
+                    <div key={day} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
+                        <span style={{ fontSize: '0.65rem', opacity: 0.7, color: 'var(--accent)' }}>{counts[i]}</span>
+                        <div
+                            style={{
+                                width: '100%',
+                                height: `${Math.max(4, (counts[i] / maxCount) * 90)}px`,
+                                background: counts[i] === 0
+                                    ? 'rgba(255,255,255,0.06)'
+                                    : `rgba(99,102,241,${0.3 + 0.7 * (counts[i] / maxCount)})`,
+                                borderRadius: '6px 6px 0 0',
+                                transition: 'height 0.4s ease'
+                            }}
+                        />
+                        <span style={{ fontSize: '0.6rem', opacity: 0.5, textTransform: 'uppercase' }}>{day}</span>
                     </div>
                 ))}
-            </div>
-            <div style={{ marginTop: 15, display: 'flex', gap: 10, alignItems: 'center', fontSize: '0.7rem', opacity: 0.5 }}>
-                <span>Less</span>
-                <div className="heatmap-square level-0"></div>
-                <div className="heatmap-square level-1"></div>
-                <div className="heatmap-square level-2"></div>
-                <div className="heatmap-square level-3"></div>
-                <div className="heatmap-square level-4"></div>
-                <span>More</span>
             </div>
         </div>
     );
@@ -69,6 +71,9 @@ function ManagerDashboard() {
     const [selectedFile, setSelectedFile] = useState(null);
     const [viewingProof, setViewingProof] = useState(null);
     const [dragOverCol, setDragOverCol] = useState(null);
+    const [employees, setEmployees] = useState([]);
+    const [financeStats, setFinanceStats] = useState(null);
+    const [financeLoading, setFinanceLoading] = useState(false);
     const fileInputRef = useRef(null);
 
     useEffect(() => {
@@ -80,12 +85,14 @@ function ManagerDashboard() {
     const fetchData = async () => {
         setLoading(true);
         try {
-            const [tasksRes, infoRes] = await Promise.all([
+            const [tasksRes, infoRes, usersRes] = await Promise.all([
                 api.get("/tasks"),
-                api.get("/users/current")
+                api.get("/users/current"),
+                api.get("/users")
             ]);
             setTasks(tasksRes.data);
             setManagerInfo(infoRes.data);
+            setEmployees(usersRes.data.filter(u => u.role === 'USER' || u.role === 'EMPLOYEE'));
         } catch (err) {
             console.error("Failed to fetch data", err);
         } finally {
@@ -168,9 +175,19 @@ function ManagerDashboard() {
         todo: tasks.filter(t => t.status === 'PENDING' && t.assignedTo?.id === managerInfo?.id).length,
         active: tasks.filter(t => t.status === 'IN_PROGRESS').length,
         completed: tasks.filter(t => t.status === 'COMPLETED').length,
-        earnings: tasks.filter(t => t.status === 'COMPLETED').length * 50,
-        efficiency: 98.4,
-        avgTime: "4.2h"
+    };
+
+    const fetchFinanceStats = async () => {
+        if (financeStats) return; // already loaded
+        setFinanceLoading(true);
+        try {
+            const res = await api.get("/tasks/finance-stats");
+            setFinanceStats(res.data);
+        } catch (err) {
+            console.error("Failed to load finance stats", err);
+        } finally {
+            setFinanceLoading(false);
+        }
     };
 
     const columns = {
@@ -198,6 +215,34 @@ function ManagerDashboard() {
         }
     };
 
+    // ── Quality Review Score ────────────────────────────────────────────
+    const [pendingScores, setPendingScores] = useState({});
+
+    const setQualityScore = async (taskId, score) => {
+        try {
+            await api.put(`/tasks/${taskId}/quality-score`, { score });
+            fetchData();
+        } catch (err) {
+            alert("Failed to submit rating");
+        }
+    };
+    // ──────────────────────────────────────────────────────────────────
+
+    // ── Backup Assignee ───────────────────────────────────────────────
+    const [backupSelections, setBackupSelections] = useState({});
+
+    const assignBackup = async (taskId) => {
+        const backupUserId = backupSelections[taskId];
+        if (!backupUserId) { alert("Please select a backup employee first"); return; }
+        try {
+            await api.put(`/tasks/${taskId}/backup-assignee`, { backupUserId: parseInt(backupUserId) });
+            fetchData();
+        } catch (err) {
+            alert("Failed to assign backup");
+        }
+    };
+    // ──────────────────────────────────────────────────────────────────
+
     return (
         <div className="dashboard-container">
             {settings.maintenanceMode && (
@@ -210,7 +255,7 @@ function ManagerDashboard() {
                 <div style={{ display: 'flex', gap: 15 }}>
                     <button className={`btn-premium ${activeTab === 'missions' ? 'btn-primary-manager' : 'btn-outline-glass'}`} onClick={() => setActiveTab('missions')}>Field HQ</button>
                     <button className={`btn-premium ${activeTab === 'schedule' ? 'btn-primary-manager' : 'btn-outline-glass'}`} onClick={() => setActiveTab('schedule')}>Schedule</button>
-                    <button className={`btn-premium ${activeTab === 'finance' ? 'btn-primary-manager' : 'btn-outline-glass'}`} onClick={() => setActiveTab('finance')}>Finance</button>
+                    <button className={`btn-premium ${activeTab === 'finance' ? 'btn-primary-manager' : 'btn-outline-glass'}`} onClick={() => { setActiveTab('finance'); fetchFinanceStats(); }}>Finance</button>
                     <button className="btn-premium btn-outline-glass" onClick={() => { localStorage.clear(); window.location.href = '/login'; }} style={{ marginLeft: 10 }}>Logout</button>
                 </div>
             </header>
@@ -308,7 +353,28 @@ function ManagerDashboard() {
                                         <strong style={{ display: 'block', marginBottom: 10 }}>{t.title}</strong>
                                         <MissionTimer startTime={t.startedAt || new Date()} />
 
-                                        <div style={{ marginTop: 15, paddingTop: 15, borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                                        {/* Backup Assignee */}
+                                        <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                                            <div style={{ fontSize: '0.7rem', opacity: 0.5, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 1 }}>Backup Assignee</div>
+                                            {t.backupAssignee ? (
+                                                <div style={{ fontSize: '0.8rem', color: 'var(--accent)', marginBottom: 8 }}>⛑ {t.backupAssignee.name}</div>
+                                            ) : null}
+                                            <div style={{ display: 'flex', gap: 6 }}>
+                                                <select
+                                                    value={backupSelections[t.id] || ''}
+                                                    onChange={e => setBackupSelections(prev => ({ ...prev, [t.id]: e.target.value }))}
+                                                    style={{ flex: 1, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: 'white', padding: '6px 8px', fontSize: '0.75rem' }}
+                                                >
+                                                    <option value="">Select employee...</option>
+                                                    {employees.map(emp => (
+                                                        <option key={emp.id} value={emp.id}>{emp.name}</option>
+                                                    ))}
+                                                </select>
+                                                <button className="btn-premium btn-outline-glass" onClick={() => assignBackup(t.id)} style={{ padding: '6px 10px', fontSize: '0.7rem', whiteSpace: 'nowrap' }}>Assign</button>
+                                            </div>
+                                        </div>
+
+                                        <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid rgba(255,255,255,0.05)' }}>
                                             <div className="file-dropzone" onClick={() => fileInputRef.current.click()} style={{ padding: '10px', fontSize: '0.7rem', marginBottom: 10 }}>
                                                 <input type="file" ref={fileInputRef} style={{ display: 'none' }} onChange={(e) => setSelectedFile(e.target.files[0])} />
                                                 {selectedFile ? `✅ ${selectedFile.name}` : '📎 Attach Proof'}
@@ -335,10 +401,38 @@ function ManagerDashboard() {
                             </div>
                             <div className="kanban-tasks">
                                 {columns.COMPLETED.map(t => (
-                                    <div key={t.id} className="kanban-card" style={{ opacity: 0.8 }} onClick={() => setViewingProof(t)}>
+                                    <div key={t.id} className="kanban-card" style={{ opacity: 0.9 }} onClick={() => setViewingProof(t)}>
                                         <strong style={{ display: 'block', marginBottom: 5 }}>{t.title}</strong>
-                                        <div style={{ fontSize: '0.7rem', color: 'var(--accent)' }}>✅ Verified Ops</div>
-                                        {t.completionProof && <div style={{ marginTop: 10, fontSize: '0.75rem', textDecoration: 'underline', cursor: 'pointer' }}>View Proof</div>}
+                                        <div style={{ fontSize: '0.7rem', color: 'var(--accent)', marginBottom: 10 }}>✅ Verified Ops</div>
+                                        {t.completionProof && <div style={{ marginBottom: 10, fontSize: '0.75rem', textDecoration: 'underline', cursor: 'pointer' }}>View Proof</div>}
+
+                                        {/* Quality Review Score */}
+                                        <div onClick={e => e.stopPropagation()} style={{ paddingTop: 10, borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                                            <div style={{ fontSize: '0.65rem', opacity: 0.5, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>Quality Score</div>
+                                            {t.qualityScore ? (
+                                                <div style={{ fontSize: '1rem', color: '#facc15' }}>
+                                                    {'★'.repeat(t.qualityScore)}{'☆'.repeat(5 - t.qualityScore)}
+                                                    <span style={{ fontSize: '0.7rem', opacity: 0.6, marginLeft: 6 }}>{t.qualityScore}/5</span>
+                                                </div>
+                                            ) : (
+                                                <div>
+                                                    <div style={{ display: 'flex', gap: 2, marginBottom: 6 }}>
+                                                        {[1, 2, 3, 4, 5].map(star => (
+                                                            <span
+                                                                key={star}
+                                                                onClick={() => setPendingScores(prev => ({ ...prev, [t.id]: star }))}
+                                                                style={{ fontSize: '1.1rem', cursor: 'pointer', color: (pendingScores[t.id] || 0) >= star ? '#facc15' : 'rgba(255,255,255,0.2)', transition: 'color 0.15s' }}
+                                                            >★</span>
+                                                        ))}
+                                                    </div>
+                                                    {pendingScores[t.id] && (
+                                                        <button className="btn-premium btn-outline-glass" onClick={() => setQualityScore(t.id, pendingScores[t.id])} style={{ width: '100%', fontSize: '0.7rem', padding: '5px', borderColor: '#facc15', color: '#facc15' }}>
+                                                            Submit Rating
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            )}
+                                        </div>
                                     </div>
                                 ))}
                             </div>
@@ -379,21 +473,41 @@ function ManagerDashboard() {
             {activeTab === 'finance' && (
                 <div className="glass-card">
                     <h2 className="section-title"><span>💰</span> Earnings & Performance</h2>
-                    <div className="stats-grid" style={{ marginBottom: 40 }}>
-                        <div className="stat-card" style={{ background: 'rgba(16, 185, 129, 0.1)' }}>
-                            <span className="stat-value">${stats.earnings}</span>
-                            <span className="stat-label">Total Revenue</span>
-                        </div>
-                        <div className="stat-card">
-                            <span className="stat-value">{stats.efficiency}%</span>
-                            <span className="stat-label">Ops Efficiency</span>
-                        </div>
-                        <div className="stat-card">
-                            <span className="stat-value">{stats.avgTime}</span>
-                            <span className="stat-label">Avg Extraction Time</span>
-                        </div>
-                    </div>
-                    <RevenueHeatmap />
+                    {financeLoading ? (
+                        <div style={{ textAlign: 'center', padding: '60px 0', opacity: 0.5, fontSize: '0.9rem', letterSpacing: 2 }}>LOADING INTEL…</div>
+                    ) : (
+                        <>
+                            <div className="stats-grid" style={{ marginBottom: 40 }}>
+                                <div className="stat-card" style={{ background: 'rgba(16, 185, 129, 0.1)' }}>
+                                    <span className="stat-value">${financeStats ? financeStats.totalEarnings.toLocaleString() : '—'}</span>
+                                    <span className="stat-label">Total Revenue</span>
+                                </div>
+                                <div className="stat-card">
+                                    <span className="stat-value">{financeStats ? `${financeStats.efficiency}%` : '—'}</span>
+                                    <span className="stat-label">Ops Efficiency</span>
+                                </div>
+                                <div className="stat-card">
+                                    <span className="stat-value">{financeStats ? (financeStats.avgHours > 0 ? `${financeStats.avgHours}h` : 'N/A') : '—'}</span>
+                                    <span className="stat-label">Avg Extraction Time</span>
+                                </div>
+                            </div>
+                            <div style={{ marginBottom: 30, padding: '16px 24px', background: 'rgba(255,255,255,0.03)', borderRadius: 16, border: '1px solid rgba(255,255,255,0.06)', display: 'flex', gap: 30, flexWrap: 'wrap' }}>
+                                <div style={{ fontSize: '0.8rem', opacity: 0.6 }}>
+                                    <span style={{ fontWeight: 800, fontSize: '1.1rem', color: 'var(--accent)', marginRight: 8 }}>
+                                        {financeStats ? financeStats.completedCount : '—'}
+                                    </span>
+                                    Missions Completed
+                                </div>
+                                <div style={{ fontSize: '0.8rem', opacity: 0.6 }}>
+                                    <span style={{ fontWeight: 800, fontSize: '1.1rem', color: '#f59e0b', marginRight: 8 }}>
+                                        ${financeStats ? (50).toLocaleString() : '—'}
+                                    </span>
+                                    Per Mission Rate
+                                </div>
+                            </div>
+                            <RevenueHeatmap heatmap={financeStats?.heatmap} />
+                        </>
+                    )}
                 </div>
             )}
 

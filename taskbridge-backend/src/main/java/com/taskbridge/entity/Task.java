@@ -52,6 +52,11 @@ public class Task {
     @ManyToOne
     private User assignedBy;
 
+    @ManyToOne
+    private User backupAssignee;
+
+    private Integer qualityScore;
+
     private String status = "PENDING";
 
     @PrePersist
